@@ -1,6 +1,8 @@
 # dinosaur 🦖
 Yet another DyKnow monitoring software killer :)
 
+For educational purposes, of course.
+
 ## Build Process
 Building is easiest on Linux platforms. First, install [cargo-xwin](https://github.com/rust-cross/cargo-xwin.git). Then, this command should work:
 ```sh
