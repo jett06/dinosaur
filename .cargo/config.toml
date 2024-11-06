@@ -1,0 +1,9 @@
+[profile.release]
+codegen-units = 1
+strip = true
+debug = false
+lto = "fat"
+panic = "abort"
+
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-Ctarget-feature=+crt-static"]
