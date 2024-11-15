@@ -7,11 +7,14 @@ use betrayer::{
     Icon,
     Menu,
     MenuItem,
+    TrayError,
     TrayEvent,
     TrayIcon,
     TrayIconBuilder,
 };
+use png::Decoder;
 use std::{
+    io::Cursor,
     sync::{
         atomic::{
             AtomicBool,
@@ -197,13 +200,26 @@ fn kill_processes_with_path_containing_selector(
     Ok(())
 }
 
+fn app_icon() -> Result<Icon, TrayError> {
+    let decoder = Decoder::new(Cursor::new(APP_ICON_PNG));
+    let mut reader = decoder
+        .read_info()
+        .map_err(|e| TrayError::custom(e.to_string()))?;
+    let mut buf = vec![0; reader.output_buffer_size()];
+    let info = reader
+        .next_frame(&mut buf)
+        .map_err(|e| TrayError::custom(e.to_string()))?;
+
+    Icon::from_rgba(buf, info.width, info.height)
+}
+
 #[no_mangle]
 pub extern "system" fn DllMain(_: HINSTANCE, call_type: u32, _: *mut ()) -> BOOL {
     match call_type {
         DLL_PROCESS_ATTACH => {
             let event_loop = EventLoop::with_user_event().build().unwrap();
             let tray = TrayIconBuilder::new()
-                .with_icon(Icon::from_rgba(vec![255u8; 32 * 32 * 4], 32, 32).unwrap())
+                .with_icon(app_icon().unwrap())
                 .with_tooltip(APP_TITLE)
                 .with_menu(Menu::new([
                     MenuItem::button("Start", Signal::Start),
