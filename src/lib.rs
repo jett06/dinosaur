@@ -61,8 +61,28 @@ enum Signal {
 }
 
 struct App {
-    _tray: TrayIcon<Signal>,
+    tray: TrayIcon<Signal>,
     killer_running: Arc<AtomicBool>,
+    should_exit: Arc<AtomicBool>,
+    killer_thread: Option<thread::JoinHandle<()>>,
+}
+
+impl App {
+    fn new_with(tray: TrayIcon<Signal>) -> Self {
+        let killer_running = Arc::new(AtomicBool::new(true));
+        let should_exit = Arc::new(AtomicBool::new(false));
+        let killer_thread = Some(spawn_killer_thread(
+            Arc::clone(&killer_running),
+            Arc::clone(&should_exit),
+        ));
+
+        Self {
+            tray,
+            killer_running,
+            should_exit,
+            killer_thread,
+        }
+    }
 }
 
 impl ApplicationHandler<TrayEvent<Signal>> for App {
@@ -72,29 +92,18 @@ impl ApplicationHandler<TrayEvent<Signal>> for App {
         if let TrayEvent::Menu(signal) = event {
             match signal {
                 Signal::Start => {
-                    if !self.killer_running.load(Ordering::SeqCst) {
+                    if self.killer_running.load(Ordering::SeqCst) {
+                        HWND::NULL
+                            .MessageBox("Already started.", APP_TITLE, co::MB::ICONINFORMATION)
+                            .unwrap();
+                    } else {
                         self.killer_running.store(true, Ordering::SeqCst);
-                        let killer_running = Arc::clone(&self.killer_running);
-                        thread::spawn(move || {
-                            while killer_running.load(Ordering::SeqCst) {
-                                if let Ok(mut snapshot) = HPROCESSLIST::CreateToolhelp32Snapshot(
-                                    co::TH32CS::SNAPPROCESS,
-                                    None,
-                                ) {
-                                    _ = kill_processes_with_path_containing_selector(
-                                        PROCESS_KILL_SELECTOR,
-                                        &mut snapshot,
-                                    );
-                                }
-                                // In Rust, empty loops use a ton of CPU - this `sleep` call helps
-                                // avoid wasteful CPU usage :)
-                                thread::sleep(Duration::from_millis(LOOP_INTERVAL_MILLIS));
-                            }
-                        });
                         HWND::NULL
                             .MessageBox("Started!", APP_TITLE, co::MB::ICONINFORMATION)
                             .unwrap();
                     }
+
+                    self.tray.set_tooltip("DyKnow killer's running!");
                 }
                 Signal::Stop => {
                     if self.killer_running.load(Ordering::SeqCst) {
@@ -102,12 +111,56 @@ impl ApplicationHandler<TrayEvent<Signal>> for App {
                         HWND::NULL
                             .MessageBox("Stopped!", APP_TITLE, co::MB::ICONINFORMATION)
                             .unwrap();
+                    } else {
+                        HWND::NULL
+                            .MessageBox("Already stopped.", APP_TITLE, co::MB::ICONINFORMATION)
+                            .unwrap();
                     }
+
+                    self.tray.set_tooltip("DyKnow killer is stopped.");
                 }
-                Signal::Quit => event_loop.exit(),
+                Signal::Quit => {
+                    self.should_exit.store(true, Ordering::SeqCst);
+                    if let Some(killer_thread) = self.killer_thread.take() {
+                        killer_thread.join().unwrap_or_else(|e| {
+                            HWND::NULL
+                                .MessageBox(
+                                    format!("Killer thread panicked! Error: {:#?}", e).as_str(),
+                                    APP_TITLE,
+                                    co::MB::ICONINFORMATION,
+                                )
+                                .unwrap();
+                        });
+                    }
+
+                    event_loop.exit();
+                }
             }
         }
     }
+}
+
+fn spawn_killer_thread(
+    killer_running: Arc<AtomicBool>, should_exit: Arc<AtomicBool>,
+) -> thread::JoinHandle<()> {
+    thread::spawn(move || loop {
+        if killer_running.load(Ordering::SeqCst) {
+            if let Ok(mut snapshot) =
+                HPROCESSLIST::CreateToolhelp32Snapshot(co::TH32CS::SNAPPROCESS, None)
+            {
+                _ = kill_processes_with_path_containing_selector(
+                    PROCESS_KILL_SELECTOR,
+                    &mut snapshot,
+                );
+            }
+        }
+
+        thread::sleep(Duration::from_millis(LOOP_INTERVAL_MILLIS));
+
+        if should_exit.load(Ordering::SeqCst) {
+            break;
+        }
+    })
 }
 
 fn kill_processes_with_path_containing_selector(
@@ -134,7 +187,7 @@ fn kill_processes_with_path_containing_selector(
                         false,
                         process_entry.th32ProcessID,
                     ) {
-                        process_kill_handle.TerminateProcess(9)?;
+                        process_kill_handle.TerminateProcess(MAX_TERMINATION)?;
                     }
                 }
             }
@@ -160,13 +213,10 @@ pub extern "system" fn DllMain(_: HINSTANCE, call_type: u32, _: *mut ()) -> BOOL
                 ]))
                 .build_event_loop(&event_loop, Some)
                 .unwrap();
+            let mut app = App::new_with(tray);
+
             event_loop.set_control_flow(ControlFlow::Wait);
-            event_loop
-                .run_app(&mut App {
-                    _tray: tray,
-                    killer_running: Arc::new(AtomicBool::new(false)),
-                })
-                .unwrap();
+            event_loop.run_app(&mut app).unwrap();
         }
         DLL_PROCESS_DETACH => {}
         _ => (),
