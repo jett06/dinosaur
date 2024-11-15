@@ -122,7 +122,7 @@ impl ApplicationHandler<TrayEvent<Signal>> for App {
                 Signal::Quit => {
                     self.should_exit.store(true, Ordering::SeqCst);
                     if let Some(killer_thread) = self.killer_thread.take() {
-                        killer_thread.join().unwrap_or_else(|e| {
+                        if let Err(e) = killer_thread.join() {
                             HWND::NULL
                                 .MessageBox(
                                     format!("Killer thread panicked! Error: {:#?}", e).as_str(),
@@ -130,7 +130,7 @@ impl ApplicationHandler<TrayEvent<Signal>> for App {
                                     co::MB::ICONINFORMATION,
                                 )
                                 .unwrap();
-                        });
+                        }
                     }
 
                     event_loop.exit();
